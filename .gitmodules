@@ -1,0 +1,6 @@
+[submodule "bedtools2"]
+	path = bedtools2
+	url = https://github.com/arq5x/bedtools2
+[submodule "genelist_to_bed"]
+	path = genelist_to_bed
+	url = https://github.com/edawson/genelist_to_bed
