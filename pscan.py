@@ -1,5 +1,6 @@
 import sys
 import multiprocessing
+import subprocess
 import tabix
 import pyensembl
 from cStringIO import StringIO
@@ -129,12 +130,22 @@ def genes_to_intervals(gene_list):
             ret.append(r)
     return ret
 
+def q_tabix(filename, chrom, start, end):
+    """Call tabix and generate an array of strings for each line it returns."""
+    query = '{}:{}-{}'.format(chrom, start, end)
+    process = subprocess.Popen(['tabix', '-f', filename, query], stdout=subprocess.PIPE)
+    for line in process.stdout:
+        yield line.strip().split()
+
 ## Present a numerical score as well as a thresholded
 ## effect prediciton for each variant
 def score_variant(var, annos):
     return 2.0
 
 def match_var(tokens, annotokens):
+    #print "call", tokens[0:5]
+    #print "anno", annotokens[0:5]
+    
     if tokens[0] == annotokens[0] and \
     tokens[1] == annotokens[1] and \
     tokens[3] == annotokens[2] and \
@@ -153,28 +164,39 @@ def handle_line(line):
     tokens = line.strip().split("\t")
 
     ## vcf filter
-    if tokens[6] != "PASS" or tokens[6] != ".":
+    if not (tokens[6] == "PASS" or tokens[6] == "."):
+        sys.stderr.write("Fails filter: " + tokens[0] + " " + tokens[1] + "\n") 
         return None
 
     ## Query tabix db
     tb_annos = None
     try:
-        tb_annos = tb_db.query(tokens[0], int(tokens[1]), int(tokens[1]) + max(int(tokens[4]), int(tokens[5])))
-    except:
+        #tb_annos = tb_db.query(tokens[0], int(tokens[1]) - 1, int(tokens[1]) - 1 + max(len(tokens[4]), len(tokens[5])))
+        tb_annos = q_tabix(default_tb_database, tokens[0], int(tokens[1]) - 1, int(tokens[1]) - 1 + max(len(tokens[4]), len(tokens[5])))
+    except Exception:
+        print "Error accessing tabix"
         pass
-    
+
+    modded = False
     ## ANNOTATE
     if tb_annos is not None:
         count = 0
         for i in tb_annos:
-            if match_var(var, i.split("\t")):
+            #tb_toks = i.split("\t")
+            tb_toks = i
+            if match_var(tokens, tb_toks):
+                sys.stderr.write("Variant found in DB:" + tokens[0] + " " + tokens[1] + " " + tokens[3] + "->" + tokens[4] + "\n")
+                tinfo = []
                 ## Make a bunch of infos and append to info string
-
-
+                for j in xrange(0, len(header)):
+                    if tb_toks[j] != ".":
+                        tinfo.append("=".join([header[j], tb_toks[j]]))
+                tokens[7] = tokens[7] + ";" + ";".join(tinfo)
+                modded = True
 
     ## return annotated variant or None
 
-    return
+    return "\t".join(tokens)
 
 def bcsq(vfile, isPhased=False):
     cmd = "bcftools csq" + "-f " + fasta_ref
@@ -188,7 +210,7 @@ def sort_vcf(vfi, faidx = None):
     cmd = "bedtools sort -header "
     if faidx is not None:
         cmd += " -faidx " + faidx
-    cmd += " -i " + vfi.name + "> " + oname
+    cmd += " -i " + vfi + "> " + oname
     sys.stderr.write("Sorting VCF file...\n")
     subprocess.call(cmd, shell = True)
     sys.stderr.write("Done.\n")
@@ -206,17 +228,19 @@ def p_annotate_vars(vfi, runSerial = False):
     ## TODO subject to change.
     if runSerial:
         for i in file_handler(vfi):
-            yield handle_line(i)
-
-    pool = multiprocessing.Pool(4)
-
-    hl = handle_line
-    lines = pool.map(hl, file_handler(vfi))
-    return lines
+            print handle_line(i)
+        return []
+    else:
+        pool = multiprocessing.Pool(4)
+        hl = handle_line
+        lines = pool.map(hl, file_handler(vfi))
+        return lines
 
 if __name__ == "__main__":
     
     if args.tabix is not None:
+        global default_tb_database
+        default_tb_database = args.tabix.name
         tb_db = tabix.open(args.tabix.name)
     else:
         tb_db = tabix.open(default_tb_database)
@@ -232,10 +256,11 @@ if __name__ == "__main__":
         pass
 
     if args.infile is not None:
-        vfi = sort_vcf(infile.name)
+        vfi = sort_vcf(args.infile.name)
         lines = p_annotate_vars(vfi)
         for i in lines:
-            print i
+            if i is not None:
+                print i
     else:
         sys.stderr.write("No input file. Please provide one (a bgzipped/tabixed VCF) with -i\n")
         exit(1)
